@@ -1,0 +1,4 @@
+G04:AMPARAMS|DCode=21|XSize=0.45mm|YSize=1.85mm|CornerRadius=0mm|HoleSize=0mm|Usage=FLASHONLY|Rotation=270.000|XOffset=0mm|YOffset=0mm|HoleType=Round|Shape=Octagon|*
+%AMOCTAGOND21*
+4,1,8,0.9250,0.1125,0.9250,-0.1125,0.8125,-0.2250,-0.8125,-0.2250,-0.9250,-0.1125,-0.9250,0.1125,-0.8125,0.2250,0.8125,0.2250,0.9250,0.1125,0.0*
+%

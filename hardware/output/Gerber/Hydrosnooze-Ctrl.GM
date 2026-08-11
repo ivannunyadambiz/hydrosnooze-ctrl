@@ -1,0 +1,24 @@
+G04*
+G04 #@! TF.GenerationSoftware,Altium Limited,Altium Designer,26.8.1 (31)*
+G04*
+G04 Layer_Color=0*
+G04 Board_Origin=0|0*
+%FSLAX44Y44*%
+%MOMM*%
+G71*
+G04*
+G04 #@! TF.SameCoordinates,54908B3F-2CB7-49BD-89E0-3A1CD299D760*
+G04*
+G04*
+G04 #@! TF.FilePolarity,Positive*
+G04*
+G01*
+G75*
+%ADD33C,0.0254*%
+D33*
+X254000Y254000D02*
+X1554480D01*
+Y904240D01*
+X254000D01*
+Y254000D01*
+M02*

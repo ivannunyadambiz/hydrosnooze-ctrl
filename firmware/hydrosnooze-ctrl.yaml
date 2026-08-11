@@ -1,0 +1,649 @@
+# Board: Seeed XIAO ESP32C3 (Seeed Studio)
+# Definition: definitions/boards/seeed-xiao-esp32c3/manifest.yaml
+
+# Author: Snowman
+# Created: 2026-08-11
+
+# If this software is useful to you, buy the author a beer.
+# Otherwise, you're on your own. 🍺
+
+esphome:
+  name: hydrosnooze-ctrl
+  friendly_name: Hydrosnooze-Ctrl
+  
+  on_boot:
+    priority: -100
+    then:
+      - lambda: |-
+          id(controller_started) = true;
+
+esp32:
+  variant: esp32c3
+  flash_size: 4MB
+  framework:
+    type: esp-idf
+
+logger:
+
+api:
+  encryption:
+    key: "+go+j8N6X5KzK7ljPAlpbSd5Lsk8FnBlztLtPYaM+js="
+
+ota:
+  - platform: esphome
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: Hydrosnooze-Ctr Fallback Hotspot
+    password: "6yFmlY42rKPm"
+
+captive_portal:
+
+web_server:
+
+i2c:
+  sda: GPIO6
+  scl: GPIO7
+  scan: true
+
+mcp23017:
+  - id: io
+    address: 0x20
+
+button:
+  - platform: restart
+    name: Restart Controller
+    
+  - platform: template
+    name: Reset Safety Faults
+    icon: "mdi:alert-remove"
+    on_press:
+      - if:
+          condition:
+            binary_sensor.is_off: float_switch
+          then:
+            - lambda: |-
+                id(pump_error) = false;
+                id(level_error) = false;
+                id(pump_low_current_since) = 0;
+
+text_sensor:
+  - platform: version
+    name: ESPHome Version
+
+sensor:    
+  - platform: uptime
+    name: Uptime
+
+  - platform: adc
+    pin: GPIO3
+    id: pump_current_adc
+    name: Pump Current ADC
+    update_interval: 250ms
+    attenuation: 0db
+    accuracy_decimals: 3
+    icon: "mdi:pump"
+
+    on_value:
+      then:
+        - lambda: |-
+            // Only monitor current while the pump is commanded ON.
+            if (id(pump).state && !id(pump_error)) {
+              if (x < 0.15f) {
+                if (id(pump_low_current_since) == 0) {
+                  id(pump_low_current_since) = millis();
+                }
+  
+                // Low current continuously for 2 seconds
+                if (millis() - id(pump_low_current_since) >= 2000) {
+                  id(pump_error) = true;
+                  id(pump_low_current_since) = 0;
+  
+                  id(heater_integral) = 0.0f;
+                  id(heater_power).set_level(0.0f);
+                  id(cooler_power).set_level(0.0f);
+                  id(heater).turn_off();
+                  id(cooler).turn_off();
+                  id(pump).turn_off();
+                }
+              } else {
+                // Current recovered, reset the timer
+                id(pump_low_current_since) = 0;
+              }
+            } else {
+              id(pump_low_current_since) = 0;
+            }
+            
+  - platform: template
+    id: pump_current
+    name: Pump Current
+    unit_of_measurement: "A"
+    device_class: current
+    state_class: measurement
+    accuracy_decimals: 3
+    update_interval: 250ms
+    lambda: |-
+      return id(pump_current_adc).state;
+    
+  - platform: adc
+    pin: GPIO4
+    id: water_temp_adc
+    name: Water Temperature ADC
+    update_interval: 250ms
+    attenuation: auto
+    accuracy_decimals: 3
+    icon: "mdi:coolant-temperature"
+
+  - platform: template
+    id: water_temperature
+    name: Water Temperature
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 1
+    icon: "mdi:coolant-temperature"
+    update_interval: 250ms
+    lambda: |-
+      const float Vcc       = 3.282f;
+      const float Rpullup   = 15040.0f;
+      const float R0        = 48300.0f;
+      const float T0        = 298.15f;
+      const float Beta      = 4340.0f;
+
+      const float V = id(water_temp_adc).state;
+
+      if (V <= 0.0f || V >= Vcc) {
+        return NAN;
+      }
+
+      const float Rntc = Rpullup * V / (Vcc - V);
+
+      const float T = 1.0f /
+        ((1.0f / T0) + (log(Rntc / R0) / Beta));
+
+      return T - 273.15f;
+
+  - platform: pulse_meter
+    pin:
+      number: GPIO20
+      mode:
+        input: true
+        pullup: true
+    name: Fan 1 RPM
+    id: fan1_rpm
+    unit_of_measurement: "RPM"
+    accuracy_decimals: 0
+    icon: "mdi:fan"
+    filters:
+      - multiply: 0.5
+        
+  - platform: pulse_meter
+    pin:
+      number: GPIO5
+      mode:
+        input: true
+        pullup: true
+    name: Fan 2 RPM
+    id: fan2_rpm
+    unit_of_measurement: "RPM"
+    accuracy_decimals: 0
+    icon: "mdi:fan"
+    filters:
+      - multiply: 0.5
+
+binary_sensor:
+  - platform: status
+    name: Controller Online
+
+  - platform: gpio
+    id: float_switch
+    name: Float Switch
+    pin:
+      mcp23xxx: io
+      number: 0
+      mode:
+        input: true
+        pullup: true
+      inverted: true
+    icon: "mdi:car-coolant-level"
+
+    on_press:
+      then:
+        - lambda: |-
+            id(level_error) = true;
+            id(heater_integral) = 0.0f;
+            id(heater_power).set_level(0.0f);
+            id(cooler_power).set_level(0.0f);
+        - switch.turn_off: heater
+        - switch.turn_off: cooler
+        - switch.turn_off: pump
+    
+  - platform: template
+    id: pump_error_sensor
+    name: Pump Error
+    device_class: problem
+    lambda: |-
+      return id(pump_error);
+    icon: "mdi:exclamation-thick"
+
+  - platform: template
+    id: level_error_sensor
+    name: Water Level Error
+    device_class: problem
+    lambda: |-
+      return id(level_error);
+    icon: "mdi:exclamation-thick"
+    
+output:
+  - platform: slow_pwm
+    id: cooler_power
+    period: 5s
+    restart_cycle_on_state_change: false
+
+    turn_on_action:
+      - switch.turn_on: cooler
+
+    turn_off_action:
+      - switch.turn_off: cooler
+        
+  - platform: slow_pwm
+    id: heater_power
+    period: 2s
+    restart_cycle_on_state_change: false
+
+    turn_on_action:
+      - switch.turn_on: heater
+
+    turn_off_action:
+      - switch.turn_off: heater
+        
+  - platform: ledc
+    id: fan_pwm_output
+    pin:
+      number: GPIO10
+      inverted: true
+    frequency: 25000 Hz
+
+fan:
+  - platform: speed
+    name: Fan
+    id: hsfan
+    output: fan_pwm_output
+    icon: "mdi:fan"
+
+    on_speed_set:
+      - if:
+          condition:
+            lambda: |-
+              return id(thermal_mode).current_option() == "COOLING" && x < 0.30f;
+          then:
+            - fan.turn_on:
+                id: hsfan
+                speed: 30
+    
+    on_turn_off:
+      - if:
+          condition:
+            lambda: |-
+              return id(thermal_mode).current_option() == "COOLING";
+          then:
+            - fan.turn_on:
+                id: hsfan
+                speed: 30
+
+switch:
+  - platform: gpio
+    id: pump
+    name: Pump
+    restore_mode: ALWAYS_OFF
+    pin:
+      mcp23xxx: io
+      number: 8
+      mode:
+        output: true
+      inverted: false
+    icon: "mdi:pump"
+  
+    on_turn_off:
+      - lambda: |-
+          id(heater_integral) = 0.0f;
+          id(heater_power).set_level(0.0f);
+          id(cooler_power).set_level(0.0f);
+          id(heater).turn_off();
+          id(cooler).turn_off();
+
+      - if:
+          condition:
+            lambda: |-
+              return !id(thermal_shutdown_active);
+          then:
+            - select.set:
+                id: thermal_mode
+                option: "OFF"
+    
+  - platform: gpio
+    id: cooler
+    name: Cooler
+    restore_mode: ALWAYS_OFF
+    pin:
+      mcp23xxx: io
+      number: 9
+      mode:
+        output: true
+      inverted: false
+    icon: "mdi:snowflake"
+
+    on_turn_on:
+      - if:
+          condition:
+            lambda: |-
+              return id(pump_error) || id(level_error);
+          then:
+            - switch.turn_off: cooler
+          else:
+            - switch.turn_off: heater
+            - switch.turn_on: pump
+
+            - if:
+                condition:
+                  lambda: |-
+                    return id(thermal_mode).current_option() == "COOLING" && (!id(hsfan).state || id(hsfan).speed < 0.30f);
+                then:
+                  - fan.turn_on:
+                      id: hsfan
+                      speed: 30
+    
+  - platform: gpio
+    id: heater
+    name: Heater
+    restore_mode: ALWAYS_OFF
+    pin:
+      mcp23xxx: io
+      number: 10
+      mode:
+        output: true
+      inverted: true
+    icon: "mdi:fire"
+  
+    on_turn_on:
+      - if:
+          condition:
+            lambda: |-
+              return id(pump_error) || id(level_error);
+          then:
+            - switch.turn_off: heater
+          else:
+            - switch.turn_off: cooler
+            - switch.turn_on: pump
+
+globals:
+  - id: controller_started
+    type: bool
+    restore_value: no
+    initial_value: "false"
+    
+  - id: temperature_error
+    type: bool
+    restore_value: no
+    initial_value: "false"
+    
+  - id: thermal_shutdown_active
+    type: bool
+    restore_value: no
+    initial_value: "false"
+    
+  - id: heater_integral
+    type: float
+    restore_value: no
+    initial_value: "0.0"
+  - id: pump_error
+    type: bool
+    restore_value: no
+    initial_value: "false"
+
+  - id: level_error
+    type: bool
+    restore_value: no
+    initial_value: "false"
+
+  - id: pump_low_current_since
+    type: uint32_t
+    restore_value: no
+    initial_value: "0"
+
+script:
+  - id: thermal_shutdown
+    mode: restart
+    then:
+      - lambda: |-
+          id(thermal_shutdown_active) = true;
+
+      # thermal outputs OFF
+      - lambda: |-
+          id(heater_integral) = 0.0f;
+          id(heater_power).set_level(0.0f);
+          id(cooler_power).set_level(0.0f);
+          id(heater).turn_off();
+          id(cooler).turn_off();
+
+      - switch.turn_on: pump
+      - fan.turn_on:
+          id: hsfan
+          speed: 100
+
+      - delay: 120s
+
+      - fan.turn_off: hsfan
+      - switch.turn_off: pump
+
+      - lambda: |-
+          id(thermal_shutdown_active) = false;
+
+number:
+  - platform: template
+    id: temperature_setpoint
+    name: Temperature Setpoint
+    min_value: 15
+    max_value: 55
+    step: 0.5
+    initial_value: 30
+    unit_of_measurement: "°C"
+    optimistic: true
+    restore_value: true
+    mode: box
+
+select:
+  - platform: template
+    id: thermal_mode
+    name: Thermal Mode
+    options:
+      - "OFF"
+      - "HEATING"
+      - "COOLING"
+    initial_option: "OFF"
+    restore_value: true
+    optimistic: true
+
+    on_value:
+      - lambda: |-
+          const std::string mode = id(thermal_mode).current_option();
+    
+          if (mode == "OFF") {
+            id(heater_integral) = 0.0f;
+            id(heater_power).set_level(0.0f);
+            id(cooler_power).set_level(0.0f);
+            id(heater).turn_off();
+            id(cooler).turn_off();
+
+            if (id(pump_error) || id(level_error) || id(temperature_error)) {
+              // Fault shutdown: pump stays OFF.
+              id(pump).turn_off();
+              
+              return;
+            }
+
+            // During boot, OFF must remain OFF.
+            if (!id(controller_started)) {
+              return;
+            }
+
+            // Normal OFF: perform the 2-minute purge.
+            id(thermal_shutdown).execute();
+            return;
+          }
+
+interval:
+  - interval: 2s
+    then:
+      - lambda: |-
+          const float temp = id(water_temperature).state;
+          const float setpoint = id(temperature_setpoint).state;
+          
+          // HARD TEMPERATURE SAFETY LIMIT
+          if (temp < 10.0f || temp > 60.0f) {
+            id(temperature_error) = true;
+
+            id(heater_integral) = 0.0f;
+            id(heater_power).set_level(0.0f);
+            id(cooler_power).set_level(0.0f);
+
+            id(heater).turn_off();
+            id(cooler).turn_off();
+            id(pump).turn_off();
+
+            auto call = id(thermal_mode).make_call();
+            call.set_option("OFF");
+            call.perform();
+
+            return;
+          }
+
+          if (isnan(temp) || isnan(setpoint)) {
+            id(heater_integral) = 0.0f;
+            id(heater_power).set_level(0.0f);
+            id(cooler_power).set_level(0.0f);
+            id(heater).turn_off();
+            id(cooler).turn_off();
+            
+            return;
+          }
+
+          // ------------------------------------------------------------
+          // Safety faults override everything
+          // ------------------------------------------------------------
+
+          if (id(pump_error) || id(level_error)) {
+            id(heater_integral) = 0.0f;
+            id(heater_power).set_level(0.0f);
+            id(cooler_power).set_level(0.0f);
+            id(heater).turn_off();
+            id(cooler).turn_off();
+            
+            return;
+          }
+
+          const std::string mode = id(thermal_mode).current_option();
+
+          // ------------------------------------------------------------
+          // OFF
+          // ------------------------------------------------------------
+
+          if (mode == "OFF") {
+            id(heater_integral) = 0.0f;
+            id(heater_power).set_level(0.0f);
+            id(cooler_power).set_level(0.0f);
+            id(heater).turn_off();
+            id(cooler).turn_off();
+            
+            return;
+          }
+
+          // ------------------------------------------------------------
+          // HEATING
+          // Heater is the ONLY thermal actuator permitted.
+          // ------------------------------------------------------------
+
+          if (mode == "HEATING") {
+            // Cooler is NEVER used in cooling mode.
+            id(cooler_power).set_level(0.0f);
+            id(cooler).turn_off();
+            
+            const float error = setpoint - temp;
+          
+            // ------------------------------------------------------------
+            // Integral term
+            //
+            // Only integrate when reasonably close to the setpoint.
+            // This prevents the integral from winding up while the heater
+            // is running at high power far below the target.
+            // ------------------------------------------------------------
+          
+            const float dt = 2.0f;  // controller interval, seconds (this was 0.5)
+          
+            if (error > -1.0f && error < 2.0f) {
+              id(heater_integral) += error * 0.0005f * dt;
+            }
+          
+            // Anti-windup
+            if (id(heater_integral) < 0.0f)
+              id(heater_integral) = 0.0f;
+          
+            if (id(heater_integral) > 0.50f)
+              id(heater_integral) = 0.50f;
+          
+            // ------------------------------------------------------------
+            // Proportional + integral control
+            // ------------------------------------------------------------
+          
+            float power =
+                error * 0.40f +
+                id(heater_integral);
+          
+            // Never heat at/above the setpoint.
+            if (temp >= setpoint) {
+              power = 0.0f;
+            }
+          
+            // Clamp
+            if (power < 0.0f)
+              power = 0.0f;
+          
+            if (power > 1.0f)
+              power = 1.0f;
+          
+            id(heater_power).set_level(power);
+          
+            return;
+          }
+
+          // ------------------------------------------------------------
+          // COOLING
+          // Cooler is the ONLY thermal actuator permitted.
+          // ------------------------------------------------------------
+
+          if (mode == "COOLING") {
+            // Heater is NEVER used in cooling mode.
+            id(heater_power).set_level(0.0f);
+            id(heater).turn_off();
+            
+            const float error = temp - setpoint;
+            
+            // Proportional cooling power.
+            float power = error * 0.40f;
+            
+            if (power < 0.0f)
+              power = 0.0f;
+            
+            if (power > 1.0f)
+              power = 1.0f;
+            
+            // Never cool below the setpoint.
+            if (temp <= setpoint)
+              power = 0.0f;
+            
+            id(cooler_power).set_level(power);
+            
+            return;
+          }
