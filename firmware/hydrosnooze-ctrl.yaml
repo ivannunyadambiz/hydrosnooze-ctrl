@@ -47,6 +47,7 @@ api:
     key: !secret hydrosnooze_ctrl__encryption_key
 ota:
   - platform: esphome
+    encryption:
 
 wifi:
   ssid: !secret wifi_ssid
@@ -57,6 +58,9 @@ wifi:
 captive_portal:
 
 web_server:
+  auth:
+    username: wagtail
+    password: !secret hydrosnooze_ctrl__web_password
 
 i2c:
   sda: GPIO6
@@ -445,6 +449,8 @@ switch:
           else:
             - switch.turn_off: heater
             - switch.turn_on: pump
+            - lambda: |-
+                id(cooler_ran) = true;
 
             - if:
                 condition:
@@ -515,12 +521,19 @@ globals:
     restore_value: no
     initial_value: "0.0"
 
+  # True once the cooler has actually run since the last purge.
+  - id: cooler_ran
+    type: bool
+    restore_value: no
+    initial_value: "false"
+
 script:
   - id: thermal_shutdown
     mode: restart
     then:
       - lambda: |-
           id(thermal_shutdown_active) = true;
+          id(cooler_ran) = false;
 
       # thermal outputs Off
       - lambda: |-
@@ -598,8 +611,31 @@ select:
             if (!id(controller_started)) {
               return;
             }
-          
-            // Start the 2-minute Peltier cooldown/purge.
+
+            // A purge is already running; it owns the pump and fan.
+            if (id(thermal_shutdown_active)) {
+              return;
+            }
+
+            // Purge only if the cooler actually ran since the last purge,
+            // and never into a fault (dry pump / low water) or an
+            // out-of-range temperature.
+            const float t = id(water_temperature).state;
+            const bool fault = id(pump_error) || id(float_switch).state ||
+                               isnan(t) || t < 10.0f || t > 60.0f;
+
+            if (!id(cooler_ran) || fault) {
+              id(cooler_ran) = false;
+
+              // No purge: the pump was started by heater/cooler turn-on and
+              // nothing else will stop it, so stop it here.
+              if (id(pump).state) {
+                id(pump).turn_off();
+              }
+              return;
+            }
+
+            // Start the Peltier cooldown/purge.
             id(thermal_shutdown).execute();
           
             return;
